@@ -1,7 +1,7 @@
 # Главный файл приложения
 
 from fastapi import FastAPI
-from routers import tasks
+from routers import tasks, stats
 
 
 # Создание приложения FastAPI
@@ -15,7 +15,8 @@ app = FastAPI(
 )
 
 
-app.include_router(tasks.router)
+app.include_router(tasks.router, prefix="/api/v1")
+app.include_router(stats.router, prefix="/api/v1")
 
 
 # 1. Приветственный эндпоинт
@@ -28,8 +29,3 @@ async def welcome() -> dict:
         "api_version": app.version,
         "api_author": app.contact["name"]
     }
-
-
-@app.post("/tasks")
-async def create_task(task: dict):
-    return {"message": "Запись успешно создана!", "task": task}

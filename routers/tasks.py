@@ -1,6 +1,8 @@
-from fastapi import APIRouter, HTTPException, Query
-from typing import List, Dict, Any
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from datetime import datetime
+
+from database import tasks_db
+from schemas import TaskCreate, TaskUpdate, TaskResponse
 
 
 router = APIRouter(
@@ -8,51 +10,6 @@ router = APIRouter(
     tags=["tasks"],
     responses={404: {"description": "Task not found"}},
 )
-
-
-# Временное хранилище задач
-tasks_db: List[Dict[str, Any]] = [
-    {
-        "id": 1,
-        "title": "Сдать проект по FastAPI",
-        "description": "Завершить разработку API и написать документацию",
-        "is_important": True,
-        "is_urgent": True,
-        "quadrant": "Q1",
-        "completed": False,
-        "created_at": datetime.now()
-    },
-    {
-        "id": 2,
-        "title": "Изучить SQLAlchemy",
-        "description": "Прочитать документацию и попробовать примеры",
-        "is_important": True,
-        "is_urgent": False,
-        "quadrant": "Q2",
-        "completed": False,
-        "created_at": datetime.now()
-    },
-    {
-        "id": 3,
-        "title": "Сходить на лекцию",
-        "description": None,
-        "is_important": False,
-        "is_urgent": True,
-        "quadrant": "Q3",
-        "completed": False,
-        "created_at": datetime.now()
-    },
-    {
-        "id": 4,
-        "title": "Посмотреть сериал",
-        "description": "Новый сезон любимого сериала",
-        "is_important": False,
-        "is_urgent": False,
-        "quadrant": "Q4",
-        "completed": True,
-        "created_at": datetime.now()
-    },
-]
 
 
 # 2. Получение списка всех задач
@@ -84,38 +41,6 @@ async def get_tasks_by_quadrant(quadrant: str) -> dict:
         "quadrant": quadrant,
         "count": len(filtered_tasks),
         "tasks": filtered_tasks
-    }
-
-
-# 4. Получение статистики по задачам
-@router.get("/stats")
-async def get_tasks_stats() -> dict:
-
-    # Количество задач в каждом квадранте
-    by_quadrant = {
-        quadrant: sum(
-            1 for task in tasks_db
-            if task["quadrant"] == quadrant
-        )
-        for quadrant in ["Q1", "Q2", "Q3", "Q4"]
-    }
-
-    # Количество выполненных и невыполненных задач
-    by_status = {
-        "completed": sum(
-            1 for task in tasks_db
-            if task["completed"]
-        ),
-        "pending": sum(
-            1 for task in tasks_db
-            if not task["completed"]
-        )
-    }
-
-    return {
-        "total_tasks": len(tasks_db),
-        "by_quadrant": by_quadrant,
-        "by_status": by_status
     }
 
 
@@ -181,8 +106,8 @@ async def search_tasks(q: str = Query(..., min_length=2)) -> dict:
 
 # 7. Получение задачи по ID
 # Динамический маршрут обязательно располагается в конце
-@router.get("/{task_id}")
-async def get_task_by_id(task_id: int) -> dict:
+@router.get("/{task_id}", response_model=TaskResponse)
+async def get_task_by_id(task_id: int) -> TaskResponse:
 
     for task in tasks_db:
         if task["id"] == task_id:
@@ -192,3 +117,76 @@ async def get_task_by_id(task_id: int) -> dict:
         status_code=404,
         detail=f"Задача с ID {task_id} не найдена"
     )
+
+
+@router.post("/", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
+async def create_task(task: TaskCreate) -> TaskResponse:
+    if task.is_important and task.is_urgent:
+        quadrant = "Q1"
+    elif task.is_important and not task.is_urgent:
+        quadrant = "Q2"
+    elif not task.is_important and task.is_urgent:
+        quadrant = "Q3"
+    else:
+        quadrant = "Q4"
+
+    new_id = max((task["id"] for task in tasks_db), default=0) + 1
+    new_task = {
+        "id": new_id,
+        "title": task.title,
+        "description": task.description,
+        "is_important": task.is_important,
+        "is_urgent": task.is_urgent,
+        "quadrant": quadrant,
+        "completed": False,
+        "created_at": datetime.now(),
+        "completed_at": None,
+    }
+    tasks_db.append(new_task)
+    return new_task
+
+
+@router.put("/{task_id}", response_model=TaskResponse)
+async def update_task(task_id: int, task_update: TaskUpdate) -> TaskResponse:
+    task = next((task for task in tasks_db if task["id"] == task_id), None)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    update_data = task_update.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        task[field] = value
+
+    if "is_important" in update_data or "is_urgent" in update_data:
+        if task["is_important"] and task["is_urgent"]:
+            task["quadrant"] = "Q1"
+        elif task["is_important"] and not task["is_urgent"]:
+            task["quadrant"] = "Q2"
+        elif not task["is_important"] and task["is_urgent"]:
+            task["quadrant"] = "Q3"
+        else:
+            task["quadrant"] = "Q4"
+
+    if "completed" in update_data:
+        task["completed_at"] = datetime.now() if task["completed"] else None
+    return task
+
+
+@router.patch("/{task_id}/complete", response_model=TaskResponse)
+async def complete_task(task_id: int) -> TaskResponse:
+    task = next((task for task in tasks_db if task["id"] == task_id), None)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    task["completed"] = True
+    task["completed_at"] = datetime.now()
+    return task
+
+
+@router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_task(task_id: int):
+    task = next((task for task in tasks_db if task["id"] == task_id), None)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    tasks_db.remove(task)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
